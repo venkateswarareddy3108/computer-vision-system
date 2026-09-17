@@ -1,0 +1,72 @@
+services:
+  # ============================================================================
+  # PostgreSQL with pgvector extension
+  # ============================================================================
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: cv-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cvuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cvpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-cv_analytics}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cvuser} -d ${POSTGRES_DB:-cv_analytics}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # Backend - FastAPI + Computer Vision Pipeline
+  # ============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cv-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cvuser}:${POSTGRES_PASSWORD:-cvpassword}@postgres:5432/${POSTGRES_DB:-cv_analytics}
+      DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-cvuser}:${POSTGRES_PASSWORD:-cvpassword}@postgres:5432/${POSTGRES_DB:-cv_analytics}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ============================================================================
+  # Frontend - React + TypeScript + Vite
+  # ============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8000
+        VITE_WS_URL: ws://localhost:8000
+    container_name: cv-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+    driver: local
